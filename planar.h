@@ -77,10 +77,19 @@ template <class RowDots, pixel_t H> struct DotRect {
 extern dots8_t far *VRAM_PLANE[PLANE_COUNT];
 // And no, expressing these as a struct won't generate the same ASM.
 // Been there, tried that.
+#if defined(PLATFORM_PS2)
+// PS2 port: the planes of whichever page is currently accessed.
+#include "platform/ps2/pc98hw.hpp"
+#define VRAM_PLANE_B (pc98::vram[pc98::page_accessed].plane[0])
+#define VRAM_PLANE_R (pc98::vram[pc98::page_accessed].plane[1])
+#define VRAM_PLANE_G (pc98::vram[pc98::page_accessed].plane[2])
+#define VRAM_PLANE_E (pc98::vram[pc98::page_accessed].plane[3])
+#else
 extern dots8_t far *VRAM_PLANE_B;
 extern dots8_t far *VRAM_PLANE_R;
 extern dots8_t far *VRAM_PLANE_G;
 extern dots8_t far *VRAM_PLANE_E;
+#endif
 
 // Byte offset of an 8-pixel-aligned X/Y position on a VRAM bitplane,
 // relative to the beginning (= top-left corner) of the plane.
@@ -154,8 +163,17 @@ static inline vram_offset_t vram_offset_divshift_wtf(screen_x_t x, vram_y_t y) {
 	(SEG_PLANE_##plane + (((y * ROW_SIZE) + (x / BYTE_DOTS)) / 16)) \
 )
 
+#if defined(PLATFORM_PS2)
+// Unaligned-safe (see pc98hw.hpp). 8-bit chunks need no special type.
+typedef dots8_t udots8_t;
+typedef u16_unaligned udots16_t;
+typedef u32_unaligned udots32_t;
+#define VRAM_CHUNK(plane, offset, bit_count) \
+	*(udots##bit_count##_t *)(VRAM_PLANE_##plane + (offset))
+#else
 #define VRAM_CHUNK(plane, offset, bit_count) \
 	*(dots##bit_count##_t far *)(VRAM_PLANE_##plane + offset)
+#endif
 
 #define VRAM_SNAP(dst, plane, offset, bit_count) \
 	dst = VRAM_CHUNK(plane, offset, bit_count);
@@ -219,6 +237,31 @@ static inline vram_offset_t vram_offset_divshift_wtf(screen_x_t x, vram_y_t y) {
 	(SEG_PLANE_B + (((y * ROW_SIZE) + (x / BYTE_DOTS)) / 16)) \
 )
 
+#if defined(PLATFORM_PS2)
+// PS2 port: the GRCG lives in software, so its reads and writes are function
+// calls. Multi-byte values are split in x86 (little-endian) order, i.e. the
+// lowest byte is the leftmost 8 pixels.
+template <class T> inline T grcg_chunk_ps2(int offset) {
+	T ret = 0;
+	for(unsigned i = 0; i < sizeof(T); i++) {
+		ret |= (T(pc98::vram_read8(0, (offset + i))) << (i * 8));
+	}
+	return ret;
+}
+template <class T> inline void grcg_put_ps2(int offset, T src) {
+	for(unsigned i = 0; i < sizeof(T); i++) {
+		pc98::vram_write8(0, (offset + i), uint8_t(src >> (i * 8)));
+	}
+}
+#define grcg_chunk(vram_offset, bit_count) \
+	grcg_chunk_ps2<dots##bit_count##_t>(vram_offset)
+
+#define grcg_chunk_8(vram_offset) \
+	pc98::vram_read8(0, (vram_offset))
+
+#define grcg_put(offset, src, bit_count) \
+	grcg_put_ps2<dots##bit_count##_t>((offset), (src));
+#else
 #define grcg_chunk(vram_offset, bit_count) \
 	VRAM_CHUNK(B, vram_offset, bit_count)
 
@@ -227,15 +270,21 @@ static inline vram_offset_t vram_offset_divshift_wtf(screen_x_t x, vram_y_t y) {
 
 #define grcg_put(offset, src, bit_count) \
 	VRAM_PUT(B, offset, src, bit_count)
+#endif
 
 #define grcg_put_emptyopt(offset, src, bit_count) \
 	if(src) { \
 		grcg_put(offset, src, bit_count); \
 	}
 
+#if defined(PLATFORM_PS2)
+#define grcg_put_8(offset, src) \
+	pc98::vram_write8(0, (offset), (src))
+#else
 #define grcg_put_8(offset, src) \
 	/* Nope, pokeb() doesn't generate the same code */ \
 	*reinterpret_cast<dots8_t far *>(MK_FP(SEG_PLANE_B, offset)) = src
+#endif
 
 // EGC
 // ---

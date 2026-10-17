@@ -5,6 +5,12 @@
 #else
 #include "th02/snd/snd.h"
 #endif
+#if defined(PLATFORM_PS2)
+#include "platform/ps2/audio.hpp"
+static inline uint16_t snd_get_song_measure(void) {
+	return audio::song_measure();
+}
+#else
 #include "x86real.h"
 
 // Wrapper around KAJA_GET_SONG_MEASURE, using PMD or MMD depending on which
@@ -19,3 +25,4 @@ static inline uint16_t snd_get_song_measure(void) {
 	}
 	return _AX;
 }
+#endif

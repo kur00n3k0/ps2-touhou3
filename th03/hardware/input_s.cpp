@@ -1,5 +1,40 @@
 #pragma option -zCSHARED -k-
 
+#if defined(PLATFORM_PS2)
+// PS2 port: DualShock controllers instead of the PC-98 keyboard.
+//   Controller 1 → single-player controls and multi-player P1
+//   Controller 2 → multi-player P2
+//   ×: Shot (Z)  ○: Bomb (X)  START: OK (Return)  △: Cancel (ESC)  SELECT: Q
+#include "libs/master.lib/master.hpp"
+#include "th03/hardware/input.h"
+#include "platform/ps2/pad.hpp"
+
+static input_t input_from_pad(uint16_t b)
+{
+	input_t ret = INPUT_NONE;
+	if(b & pad::UP)       { ret |= INPUT_UP; }
+	if(b & pad::DOWN)     { ret |= INPUT_DOWN; }
+	if(b & pad::LEFT)     { ret |= INPUT_LEFT; }
+	if(b & pad::RIGHT)    { ret |= INPUT_RIGHT; }
+	if(b & pad::CROSS)    { ret |= INPUT_SHOT; }
+	if(b & pad::CIRCLE)   { ret |= INPUT_BOMB; }
+	return ret;
+}
+
+void input_reset_sense_key_held(void)
+{
+	js_stat[0] = INPUT_NONE;
+	const uint16_t p1 = pad::held(0);
+	const uint16_t p2 = pad::held(1);
+
+	input_mp_p1 = input_from_pad(p1);
+	input_mp_p2 = input_from_pad(p2);
+	input_sp = input_mp_p1;
+	if(p1 & pad::START)    { input_sp |= INPUT_OK; }
+	if(p1 & pad::TRIANGLE) { input_sp |= INPUT_CANCEL; }
+	if(p1 & pad::SELECT)   { input_sp |= INPUT_Q; }
+}
+#else
 #include "x86real.h"
 #include "libs/master.lib/master.hpp"
 #include "platform/x86real/flags.hpp"
@@ -141,3 +176,4 @@ void input_reset_sense_key_held(void)
 	} while(1);
 }
 #pragma codestring "\x90"
+#endif

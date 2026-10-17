@@ -216,6 +216,11 @@ void MASTER_RET respal_free(void);
 // simplify frame delay loops.
 extern volatile unsigned int __cdecl vsync_Count1, vsync_Count2;
 
+#if defined(PLATFORM_PS2)
+// No interrupts to mask: the VSync procedure runs on the main thread.
+#define disable()
+#define enable()
+#endif
 #define vsync_proc_set(proc) { \
 	extern func_t __cdecl vsync_Proc; \
 	disable(); \
@@ -254,9 +259,11 @@ template<class T> struct HMem {
 		hmem_free(reinterpret_cast<void __seg *>(block));
 	}
 
+#if !defined(PLATFORM_PS2) // identical to the overload above on PS2
 	static void free(T __seg *&block) {
 		hmem_free(reinterpret_cast<void __seg *>(block));
 	}
+#endif
 };
 
 // Type-safe resident structure allocation and retrieval

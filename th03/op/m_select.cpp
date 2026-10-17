@@ -513,11 +513,15 @@ void pascal near select_update_player(input_t input, pid2 pid)
 	}
 
 	if(input & INPUT_UP) {
-		ring_dec(static_cast<char>(sel[pid]), (playchars_available - 1));
+		char tmp = sel[pid];
+		ring_dec(tmp, (playchars_available - 1));
+		sel[pid] = static_cast<playchar_t>(tmp);
 		input_locked[pid] = true;
 	}
 	if(input & INPUT_DOWN) {
-		ring_inc_ge(static_cast<char>(sel[pid]), playchars_available);
+		char tmp = sel[pid];
+		ring_inc_ge(tmp, playchars_available);
+		sel[pid] = static_cast<playchar_t>(tmp);
 		input_locked[pid] = true;
 	}
 	if(input & INPUT_SHOT) {

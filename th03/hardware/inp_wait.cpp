@@ -9,13 +9,14 @@ bool16 pascal input_wait_for_ok_or_measure(int measure, unsigned int frames)
 	if(!snd_active) {
 		return input_wait_for_ok(frames);
 	}
+	int cur;
 	do {
-		_AX = snd_get_song_measure();
+		cur = snd_get_song_measure();
 		input_mode_interface();
 		if((input_sp & INPUT_SHOT) || (input_sp & INPUT_OK)) {
 			return true;
 		}
-	} while(_AX < measure);
+	} while(cur < measure);
 	return false;
 }
 

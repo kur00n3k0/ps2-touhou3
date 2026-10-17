@@ -7,6 +7,51 @@
 #ifndef PLATFORM_X86REAL_PC98_GRCG_HPP
 #define PLATFORM_X86REAL_PC98_GRCG_HPP
 
+#if defined(PLATFORM_PS2)
+// PS2 port: same interface, backed by the software GRCG in pc98hw.
+#include "planar.h"
+#include "platform/ps2/pc98hw.hpp"
+#undef GC_OFF
+#undef GC_TDW
+#undef GC_TCR
+#undef GC_RMW
+enum grcg_mode_t {
+	GC_OFF = 0x00,
+	GC_TDW = 0x80,
+	GC_TCR = 0x80,
+	GC_RMW = 0xC0,
+};
+typedef vc_t grcg_plane_mask_t;
+
+struct GRCG {
+	GRCG(grcg_mode_t mode, grcg_plane_mask_t plane_mask = 0) {
+		pc98::grcg_mode = uint8_t(mode | plane_mask);
+	}
+	void set_tile(
+		const dots8_t& b, const dots8_t& r, const dots8_t& g, const dots8_t& e
+	) {
+		set_tile_static(b, r, g, e);
+	}
+	void set_color(vc_t col) {
+		set_color_static(col);
+	}
+	void set_tile_static(dots8_t b, dots8_t r, dots8_t g, dots8_t e) {
+		pc98::grcg_tile[0] = b;
+		pc98::grcg_tile[1] = r;
+		pc98::grcg_tile[2] = g;
+		pc98::grcg_tile[3] = e;
+	}
+	void set_color_static(vc_t col) {
+		for(int p = 0; p < 4; p++) {
+			pc98::grcg_tile[p] = ((col & (1 << p)) ? 0xFF : 0x00);
+		}
+	}
+	~GRCG() {
+		pc98::grcg_off();
+	}
+};
+#else
+
 #include "planar.h"
 #include "x86real.h"
 
@@ -74,5 +119,7 @@ struct GRCG {
 		_outportb_(0x7C, GC_OFF);
 	}
 };
+
+#endif /* !PLATFORM_PS2 */
 
 #endif /* PLATFORM_X86REAL_PC98_GRCG_HPP */

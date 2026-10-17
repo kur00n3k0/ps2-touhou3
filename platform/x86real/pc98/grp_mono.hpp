@@ -7,6 +7,13 @@ struct GrpMono : public GRCG {
 	GrpMono() : GRCG(GC_RMW) {
 	}
 
+#if defined(PLATFORM_PS2)
+	void draw_point_noclip(const screen_x_t& x, const vram_y_t& y) {
+		pc98::vram_write8(
+			0, ((y * ROW_SIZE) + (x >> BYTE_BITS)), (0x80 >> (x & BYTE_MASK))
+		);
+	}
+#else
 	void __fastcall draw_point_noclip(const screen_x_t& x, const vram_y_t& y) {
 		// Neat trick from master.lib: Since all VRAM rows are segment-aligned,
 		// we can calculate [y] into the segment rather than the offset, which
@@ -18,4 +25,5 @@ struct GrpMono : public GRCG {
 			(0x80 >> (x & BYTE_MASK))
 		);
 	}
+#endif
 };

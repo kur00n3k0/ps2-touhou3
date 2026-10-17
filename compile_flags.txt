@@ -1,5 +1,6 @@
 -xc++
 -std=gnu++17
+-D_EE
 -DPLATFORM_PS2
 -DGAME=3
 -DMASTER_FAR

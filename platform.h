@@ -45,6 +45,12 @@ typedef void (     pascal *              func_t)(void);
 #define __cdecl
 #define _seg
 #define __seg
+#define __ds
+#define __es
+#define __ss
+#define __cs
+#define _ds
+#define _es
 #define __near
 #define __far
 #define __huge

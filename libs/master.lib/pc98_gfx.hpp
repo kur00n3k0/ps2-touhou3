@@ -77,11 +77,17 @@ int MASTER_RET gaiji_entry_bfnt(const char MASTER_PTR *filename);
 // Graphics
 // --------
 
+#if defined(PLATFORM_PS2)
+#include "platform/ps2/pc98hw.hpp"
+#define graph_showpage(p) (pc98::page_shown = ((p) & 1))
+#define graph_accesspage(p) (pc98::page_accessed = ((p) & 1))
+#else
 #define graph_showpage(p) \
 	outportb(0xA4, p)
 
 #define graph_accesspage(p) \
 	outportb(0xA6, p)
+#endif
 
 extern unsigned __cdecl graph_VramZoom;
 

@@ -30,11 +30,18 @@ inline uint16_t for_current(void) {
 	return snd_se_playing;
 }
 
+#if defined(PLATFORM_PS2)
+#include "platform/ps2/audio.hpp"
+inline void driver_play(unsigned char &se) {
+	audio::se_play(se);
+}
+#else
 inline void driver_play(unsigned char &se) {
 	_AH = PMD_SE_PLAY;
 	_AL = se;
 	geninterrupt(PMD);
 }
+#endif
 #endif
 
 void DEFCONV snd_se_play(int new_se)
