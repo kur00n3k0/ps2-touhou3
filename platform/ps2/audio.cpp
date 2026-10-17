@@ -5,6 +5,7 @@
 #include <audsrv.h>
 #include <kernel.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 
@@ -46,6 +47,63 @@ int lock = -1;
 bool ready = false;
 int16_t mixbuf[CHUNK_FRAMES * 2];
 
+// Sound effects: pre-rendered from YUME.EFC (ps2port/tools/efc2m.py +
+// pmd2wav) and kept in memory. Like PMD's single FM effect channel, a new
+// effect replaces the one that is playing.
+enum { SE_SLOTS = 64 };
+struct Effect {
+	int16_t *pcm = nullptr; // stereo frames
+	long frames = 0;
+};
+Effect effects[SE_SLOTS];
+volatile int se_request = -1;
+int se_cur = -1;
+long se_pos = 0;
+
+// Seeks [fp] to the PCM data of a RIFF WAV file and returns its size in
+// frames (16-bit stereo), or 0 if there is no data chunk.
+long wav_find_data(FILE *fp)
+{
+	uint8_t hdr[12];
+	if(fread(hdr, 1, 12, fp) != 12) {
+		return 0;
+	}
+	for(;;) {
+		uint8_t ck[8];
+		if(fread(ck, 1, 8, fp) != 8) {
+			return 0;
+		}
+		const uint32_t size = (ck[4] | (ck[5] << 8) | (ck[6] << 16) | (ck[7] << 24));
+		if(memcmp(ck, "data", 4) == 0) {
+			return (size / 4);
+		}
+		fseek(fp, size, SEEK_CUR);
+	}
+}
+
+void effects_load()
+{
+	int loaded = 0;
+	for(int n = 0; n < SE_SLOTS; n++) {
+		char path[256];
+		fs::path(path, sizeof(path), "audio/se/SE%02d.wav", n);
+		FILE *fp = fopen(path, "rb");
+		if(!fp) {
+			continue;
+		}
+		const long frames = wav_find_data(fp);
+		if(frames > 0) {
+			effects[n].pcm = static_cast<int16_t *>(malloc(frames * 4));
+			if(effects[n].pcm) {
+				effects[n].frames = fread(effects[n].pcm, 4, frames, fp);
+				loaded++;
+			}
+		}
+		fclose(fp);
+	}
+	printf("audio: %d sound effects loaded\n", loaded);
+}
+
 // Opens audio/<NAME>.wav and its .loop sidecar for [name] ("OP.M" → "OP").
 bool song_open(Song& s, const char *name)
 {
@@ -67,24 +125,8 @@ bool song_open(Song& s, const char *name)
 		printf("audio: missing %s\n", path);
 		return false;
 	}
-	// Find the "data" chunk of the RIFF file.
-	uint8_t hdr[12];
-	fread(hdr, 1, 12, s.fp);
-	s.data_offset = 0;
-	s.total = 0;
-	for(;;) {
-		uint8_t ck[8];
-		if(fread(ck, 1, 8, s.fp) != 8) {
-			break;
-		}
-		const uint32_t size = (ck[4] | (ck[5] << 8) | (ck[6] << 16) | (ck[7] << 24));
-		if(memcmp(ck, "data", 4) == 0) {
-			s.data_offset = ftell(s.fp);
-			s.total = (size / 4);
-			break;
-		}
-		fseek(s.fp, size, SEEK_CUR);
-	}
+	s.total = wav_find_data(s.fp);
+	s.data_offset = ftell(s.fp);
 	s.loop_start = -1;
 	fs::path(path, sizeof(path), "audio/%s.wav.loop", base);
 	if(FILE *lp = fopen(path, "r")) {
@@ -188,7 +230,27 @@ void mixer_pass()
 	}
 	fade_value_shared = uint8_t(song.fade_value);
 
-	// TODO: mix sound effects here once they are rendered.
+	if(se_request >= 0) {
+		se_cur = se_request;
+		se_request = -1;
+		se_pos = 0;
+	}
+	if((se_cur >= 0) && effects[se_cur].pcm) {
+		const Effect &e = effects[se_cur];
+		long n = (e.frames - se_pos);
+		if(n > CHUNK_FRAMES) {
+			n = CHUNK_FRAMES;
+		}
+		const int16_t *src = (e.pcm + (se_pos * 2));
+		for(long i = 0; i < (n * 2); i++) {
+			int v = (mixbuf[i] + src[i]);
+			mixbuf[i] = int16_t((v > 32767) ? 32767 : ((v < -32768) ? -32768 : v));
+		}
+		se_pos += n;
+		if(se_pos >= e.frames) {
+			se_cur = -1;
+		}
+	}
 
 	audsrv_wait_audio(sizeof(mixbuf));
 	audsrv_play_audio(reinterpret_cast<const char *>(mixbuf), sizeof(mixbuf));
@@ -220,6 +282,7 @@ bool init()
 		return false;
 	}
 	audsrv_set_volume(MAX_VOLUME);
+	effects_load();
 
 	ee_sema_t sema = {};
 	sema.init_count = 1;
@@ -277,8 +340,10 @@ int song_measure()
 
 void se_play(int se)
 {
-	// TODO: pre-rendered YUME.EFC effects.
-	(void)se;
+	if(!ready || (se < 0) || (se >= SE_SLOTS) || !effects[se].pcm) {
+		return;
+	}
+	se_request = se;
 }
 
 } // namespace audio
