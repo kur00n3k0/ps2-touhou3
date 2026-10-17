@@ -20,6 +20,9 @@
 
 #include <stdint.h>
 
+// Headers may include this one from inside an extern "C" block.
+extern "C++" {
+
 // Unaligned-safe access. The x86 allows 16/32-bit reads and writes at any
 // address; the Emotion Engine raises an address error. Every multi-byte access
 // to emulated memory goes through these types.
@@ -89,7 +92,8 @@ extern bool palette_dirty;
 enum { TRAM_BYTES = 0x2000 };
 extern uint8_t tram_code[TRAM_BYTES];
 extern uint8_t tram_atrb[TRAM_BYTES];
-// 16×16 user glyphs; [i][0..15] left half rows, [i][16..31] right half rows.
+// 16×16 user glyphs, 2 bytes per row (left 8 dots, right 8 dots), MSB =
+// leftmost dot. Same layout as the kanji in PC98FONT.BIN.
 extern uint8_t gaiji[GAIJI_COUNT][32];
 // Whether the text layer is visible at all.
 extern bool text_shown;
@@ -118,5 +122,7 @@ inline void poke(uint16_t seg, uint32_t off, uint16_t v) {
 }
 #define _pokeb_ pokeb
 #define _peekb_ peekb
+
+} // extern "C++"
 
 #endif /* PLATFORM_PS2_PC98HW_HPP */

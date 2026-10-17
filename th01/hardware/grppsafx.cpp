@@ -46,13 +46,19 @@ void pascal graph_putsa_fx(
 
 	grcg.set_color(col_and_fx);
 
+#if !defined(PLATFORM_PS2)
 	outportb(0x68, 0xB); // CG ROM dot access
+#endif
 
 	while(str[0]) {
 		font_glyph_t glyph;
+#if defined(PLATFORM_PS2)
+		int vo = vram_offset_shift(left, top);
+#else
 		dots8_t far *vram = reinterpret_cast<dots8_t far *>(
 			MK_FP(SEG_PLANE_B, vram_offset_shift(left, top))
 		);
+#endif
 		int first_bit = (left & BYTE_MASK);
 		jis_t codepoint;
 
@@ -140,6 +146,17 @@ void pascal graph_putsa_fx(
 					glyph_row ^= 0xFF00;
 				}
 			}
+#if defined(PLATFORM_PS2)
+			if(first_bit) {
+				grcg_put_8((vo + 0), dots8_t(glyph_row >> (first_bit + BYTE_DOTS)));
+				grcg_put_8((vo + 1), dots8_t(glyph_row >> (first_bit +         0)));
+				grcg_put_8((vo + 2), dots8_t(glyph_row << (BYTE_DOTS - first_bit)));
+			} else {
+				grcg_put_8((vo + 0), dots8_t(glyph_row >> BYTE_DOTS));
+				grcg_put_8((vo + 1), dots8_t(glyph_row));
+			}
+			vo += ROW_SIZE;
+#else
 			if(first_bit) {
 				vram[0] = (glyph_row >> (first_bit + BYTE_DOTS));
 				vram[1] = (glyph_row >> (first_bit +         0));
@@ -150,8 +167,11 @@ void pascal graph_putsa_fx(
 				);
 			}
 			vram += ROW_SIZE;
+#endif
 		}
 		left += glyph.tag.w;
 	}
+#if !defined(PLATFORM_PS2)
 	outportb(0x68, 0xA); // CG ROM code access
+#endif
 }

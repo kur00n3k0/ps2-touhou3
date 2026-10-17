@@ -1,0 +1,44 @@
+# PS2 port of TH03 (menu milestone): builds th03.elf with ps2sdk.
+#
+#   make -f Makefile.ps2           build obj-ps2/th03.elf
+#   make -f Makefile.ps2 clean
+#
+# Needs PS2SDK set (see ~/.zshrc). Game code is ReC98's original sources;
+# platform/ps2/ provides everything the PC-98 used to.
+
+EE_BIN = obj-ps2/th03.elf
+
+# ReC98 sources of the combined OP/MAINL binary (from Tupfile.lua), minus the
+# PMD-driver-specific sound files that platform/ps2/snd_game.cpp replaces.
+GAME_SRCS = \
+	th03/op_01.cpp th03/op_music.cpp th03/op_main.cpp th03/op_sel.cpp \
+	th03/cfg_lres.cpp th03/scoredat.cpp \
+	th01/grppsafx.cpp th02/exit_dos.cpp th02/frmdelay.cpp th02/snd_se_r.cpp \
+	th02/vplanset.cpp th03/cdg_load.cpp th03/exit.cpp th03/exitmain.cpp \
+	th03/initmain.cpp th03/initop.cpp th03/inp_m_w.cpp th03/inp_wait.cpp \
+	th03/input_s.cpp th03/snd_se.cpp th03/sprites/pi_mask.cpp th03/vector.cpp
+
+PS2_SRCS = $(wildcard platform/ps2/*.cpp)
+
+OBJS = $(patsubst %.cpp,obj-ps2/%.o,$(GAME_SRCS) $(PS2_SRCS))
+EE_OBJS = $(OBJS)
+
+EE_INCS += -I. -isystem platform/ps2/include
+EE_CXXFLAGS += -std=gnu++17 -fpermissive -Wno-write-strings -fno-exceptions \
+	-fno-rtti -fno-strict-aliasing -fwrapv \
+	-D_EE -DPLATFORM_PS2 -DGAME=3 -DMASTER_FAR -include platform.h
+EE_LIBS += -laudsrv -lpad -lgskit -ldmakit -lpatches
+EE_LDFLAGS += -L$(GSKIT)/lib
+EE_INCS += -I$(GSKIT)/include
+
+all: $(EE_BIN)
+
+obj-ps2/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(EE_CXX) $(EE_CXXFLAGS) $(EE_INCS) -c $< -o $@
+
+clean:
+	rm -rf obj-ps2
+
+include $(PS2SDK)/samples/Makefile.pref
+include $(PS2SDK)/samples/Makefile.eeglobal_cpp
