@@ -8,6 +8,7 @@
 
 #include "th03/formats/cdg.h"
 #include "platform/ps2/pc98hw.hpp"
+#include <stdio.h>
 
 extern "C" {
 
@@ -43,8 +44,26 @@ inline int dst_offset(screen_x_t left, vram_y_t top, int row)
 
 void cdg_blit(screen_x_t left, vram_y_t top, int slot, blit_mode_t mode, bool hflip)
 {
+	if((slot < 0) || (slot >= CDG_SLOT_COUNT)) {
+		printf("cdg: slot %d out of range\n", slot);
+		return;
+	}
 	CDG& cdg = cdg_slots[slot];
 	if(!cdg.seg_colors()) {
+		return;
+	}
+	// Anything below the start of our program can't be a heap allocation.
+	auto bogus = [](const void *p) {
+		return (p && (reinterpret_cast<uintptr_t>(p) < 0x100000));
+	};
+	if(bogus(cdg.seg_colors()) || bogus(cdg.seg_alpha())) {
+		printf(
+			"cdg: slot %d has invalid data pointers (alpha %p, colors %p, "
+			"%dx%d, bitplane_size %u, count %u)\n",
+			slot, (void *)cdg.seg_alpha(), (void *)cdg.seg_colors(),
+			cdg.pixel_w, cdg.pixel_h, unsigned(cdg.bitplane_size),
+			unsigned(cdg.image_count)
+		);
 		return;
 	}
 	const int wbytes = (cdg.vram_dword_w * 4);
