@@ -16,11 +16,17 @@ GAME_SRCS = \
 	th01/grppsafx.cpp th02/exit_dos.cpp th02/frmdelay.cpp th02/snd_se_r.cpp \
 	th02/vplanset.cpp th03/cdg_load.cpp th03/exit.cpp th03/exitmain.cpp \
 	th03/initmain.cpp th03/initop.cpp th03/inp_m_w.cpp th03/inp_wait.cpp \
-	th03/input_s.cpp th03/snd_se.cpp th03/sprites/pi_mask.cpp th03/vector.cpp
+	th03/input_s.cpp th03/snd_se.cpp th03/sprites/pi_mask.cpp th03/vector.cpp \
+	game/pi_surf.cpp game/bgimage.cpp
 
 PS2_SRCS = $(wildcard platform/ps2/*.cpp)
 
 OBJS = $(patsubst %.cpp,obj-ps2/%.o,$(GAME_SRCS) $(PS2_SRCS))
+
+# IOP modules embedded into the ELF (loaded by platform/ps2/main.cpp).
+IRX_NAMES = sio2man padman libsd audsrv
+IRX_OBJS = $(patsubst %,obj-ps2/irx/%_irx.o,$(IRX_NAMES))
+OBJS += $(IRX_OBJS)
 EE_OBJS = $(OBJS)
 
 EE_INCS += -I. -isystem platform/ps2/include
@@ -35,10 +41,19 @@ all: $(EE_BIN)
 
 obj-ps2/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(EE_CXX) $(EE_CXXFLAGS) $(EE_INCS) -c $< -o $@
+	$(EE_CXX) $(EE_CXXFLAGS) $(EE_INCS) -MMD -MP -c $< -o $@
+
+obj-ps2/irx/%_irx.c: $(PS2SDK)/iop/irx/%.irx
+	@mkdir -p $(dir $@)
+	$(PS2SDK)/bin/bin2c $< $@ $*_irx
+
+obj-ps2/irx/%_irx.o: obj-ps2/irx/%_irx.c
+	$(EE_CC) -c $< -o $@
 
 clean:
 	rm -rf obj-ps2
+
+-include $(OBJS:.o=.d)
 
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal_cpp

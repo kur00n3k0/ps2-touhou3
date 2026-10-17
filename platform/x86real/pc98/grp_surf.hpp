@@ -17,8 +17,14 @@ struct GrpSurface {
 // Surfaces allocated in memory, with each bitplane stored sequentially in a
 // single allocation.
 struct GrpSurface_M : public GrpSurface {
+#if defined(PLATFORM_PS2)
+	// PS2 port: a real pointer, and the size of one bitplane in bytes.
+	uint8_t *plane_B;
+	uint32_t plane_paras;
+#else
 	seg_t plane_B; // Segment pointer to the first bitplane.
 	uint16_t plane_paras; // Paragraph size of a single bitplane.
+#endif
 
 	void pascal free(void);
 };

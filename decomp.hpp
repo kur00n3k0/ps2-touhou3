@@ -98,6 +98,13 @@ template <class T> inline T keep_0(T x) {
 inline bool optimization_barrier(void) {
 	return false;
 }
+#elif defined(PLATFORM_PS2)
+#define keep_0(x) x
+#define inhibit_Z3(x) x
+// Some code uses the barrier as an operand of ?:, so it must be an expression.
+inline bool optimization_barrier(void) {
+	return false;
+}
 #else
 #define keep_0(x) x
 #define inhibit_Z3(x) x

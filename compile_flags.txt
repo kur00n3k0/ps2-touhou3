@@ -11,3 +11,4 @@ platform.h
 platform/ps2/include
 -I/home/peter/ps2dev/ps2sdk/ee/include
 -I/home/peter/ps2dev/ps2sdk/common/include
+-I/home/peter/ps2dev/gsKit/include

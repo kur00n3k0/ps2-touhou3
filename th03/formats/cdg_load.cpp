@@ -2,6 +2,7 @@
 
 #include "libs/master.lib/master.hpp"
 #include "th03/formats/cdg.h"
+#include <stddef.h>
 
 // Won't load the alpha plane of the next CDG file if nonzero.
 extern bool cdg_noalpha;
@@ -18,8 +19,24 @@ extern bool cdg_noalpha;
 	)); \
 	file_read((cdg).seg_colors(), ((cdg).bitplane_size * PLANE_COUNT)); \
 
+#if defined(PLATFORM_PS2)
+// PS2 port: in the file, the header ends with two 16-bit segment values; in
+// memory, those are 32-bit pointers. Read the 12 bytes before them, skip the
+// 4 file bytes, and clear the pointers.
+static void cdg_file_read_header(CDG& cdg) {
+	file_read(&cdg, offsetof(CDG, seg));
+	file_seek(4, SEEK_CUR);
+	cdg.seg[0] = nullptr;
+	cdg.seg[1] = nullptr;
+}
+#define cdg_file_read_header_p(cdg_p) cdg_file_read_header(*(cdg_p))
+#else
+#define cdg_file_read_header(cdg) file_read(&cdg, sizeof(CDG))
+#define cdg_file_read_header_p(cdg_p) file_read(cdg_p, sizeof(CDG))
+#endif
+
 #define cdg_read_header_and_seek_to_image(cdg, n) \
-	file_read(&cdg, sizeof(CDG)); \
+	cdg_file_read_header(cdg); \
 	\
 	uint32_t image_size = (cdg.bitplane_size * (PLANE_COUNT + 1)); \
 	file_seek((n * image_size), SEEK_CUR);
@@ -57,7 +74,7 @@ void pascal cdg_load_all(int slot_first, const char *fn)
 	cdg_free(slot_first);
 
 	CDG near *cdg_p = &cdg_slots[slot_first];
-	file_read(cdg_p, sizeof(CDG));
+	cdg_file_read_header_p(cdg_p);
 
 	CDG near &cdg_first = *cdg_p;
 	int i;
