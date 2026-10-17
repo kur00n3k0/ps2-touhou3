@@ -32,6 +32,37 @@ typedef void ( far pascal * far   farfunc_t_far)(void);
 typedef void (     pascal *near     func_t_near)(void);
 typedef void (     pascal * far      func_t_far)(void);
 typedef void (     pascal *              func_t)(void);
+#elif defined(PLATFORM_PS2)
+// PS2 port: 32-bit flat memory model. The 16-bit distance and calling
+// convention keywords carry no meaning here.
+#include <stdint.h>
+#include <stddef.h>
+#define near
+#define far
+#define huge
+#define pascal
+#define cdecl
+#define __cdecl
+#define _seg
+#define __seg
+#define __near
+#define __far
+#define __huge
+#define __pascal
+#define _pascal
+#define _cdecl
+#define _far
+#define _near
+#define _huge
+typedef int16_t bool16;
+
+typedef void (*nearfunc_t_near)(void);
+typedef void (*farfunc_t_near)(void);
+typedef void (*nearfunc_t_far)(void);
+typedef void (*farfunc_t_far)(void);
+typedef void (*func_t_near)(void);
+typedef void (*func_t_far)(void);
+typedef void (*func_t)(void);
 #else
 #error This code can currently only be compiled on Borland's 16-bit DOS compilers. Ideally, you'd only have to declare <stdint.h> types for your compiler here though?
 #endif

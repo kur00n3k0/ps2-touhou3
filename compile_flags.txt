@@ -1,0 +1,12 @@
+-xc++
+-std=gnu++17
+-DPLATFORM_PS2
+-DGAME=3
+-DMASTER_FAR
+-include
+platform.h
+-I.
+-isystem
+platform/ps2/include
+-I/home/peter/ps2dev/ps2sdk/ee/include
+-I/home/peter/ps2dev/ps2sdk/common/include

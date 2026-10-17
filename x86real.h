@@ -10,6 +10,11 @@
 
 #include "platform.h"
 
+#if defined(PLATFORM_PS2)
+// PS2 port: none of this exists on the Emotion Engine. Code that still needs
+// it fails to compile and gets rewritten against platform/ps2/ instead.
+#else
+
 // Turbo C++ 4.0J's <conio.h> tries to redefine them otherwise.
 #define _PORT_DEFS
 
@@ -155,5 +160,7 @@ inline void __seg* intvector_segment(uint8_t i) {
 }
 #endif
 // --------------------------
+
+#endif /* !PLATFORM_PS2 */
 
 #endif /* X86REAL_H */
