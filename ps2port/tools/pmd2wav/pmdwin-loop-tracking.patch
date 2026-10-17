@@ -1,0 +1,85 @@
+diff --git a/src/pmdwin/pmdwin.cpp b/src/pmdwin/pmdwin.cpp
+index 879a105..0513690 100755
+--- a/src/pmdwin/pmdwin.cpp
++++ b/src/pmdwin/pmdwin.cpp
+@@ -10,6 +10,9 @@
+ # include <mbstring.h>
+ #endif
+ #include <stdio.h>
++
++/* pmd2wav: per-part loop tracking (added for the TH03 PS2 port tools) */
++extern "C" { long pmd2wav_tick = 0; void pmd2wav_part_looped(void *part); }
+ #include <memory.h>
+ #include <string.h>
+ #include <ctype.h>
+@@ -164,6 +167,7 @@ void PMDWIN::TimerB_main(void)
+ //=============================================================================
+ void PMDWIN::mmain(void)
+ {
++	pmd2wav_tick++;
+ 	int		i;
+ 
+ 	pmdwork.loop_work = 3;
+@@ -281,7 +285,7 @@ void PMDWIN::fmmain(QQ *qq)
+ 				}
+ 				// "L"があった時
+ 				si = qq->partloop;
+-				qq->loopcheck = 1;
++				qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 			} else {
+ 				if(*si == 0xda) {		// ポルタメント
+ 					si = porta(qq, ++si);
+@@ -1024,7 +1028,7 @@ void PMDWIN::psgmain(QQ *qq)
+ 				}
+ 				// "L"があった時
+ 				si = qq->partloop;
+-				qq->loopcheck = 1;
++				qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 			} else {
+ 				if(*si == 0xda) {						// ポルタメント
+ 					si = portap(qq, ++si);
+@@ -1195,7 +1199,7 @@ void PMDWIN::rhythmmain(QQ *qq)
+ 				return;
+ 			} else {		//  "L"があった時
+ 				si = bx;
+-				qq->loopcheck = 1;
++				qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 			}
+ 		}
+ 	}
+@@ -1502,7 +1506,7 @@ void PMDWIN::adpcmmain(QQ *qq)
+ 				}
+ 				// "L"があった時
+ 				si = qq->partloop;
+-				qq->loopcheck = 1;
++				qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 			} else {
+ 				if(*si == 0xda) {				// ポルタメント
+ 					si = portam(qq, ++si);
+@@ -1645,7 +1649,7 @@ void PMDWIN::pcm86main(QQ *qq)
+ 				}
+ 				// "L"があった時
+ 				si = qq->partloop;
+-				qq->loopcheck = 1;
++				qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 			} else {
+ 				if(qq->partmask) {
+ 					si++;
+@@ -1782,7 +1786,7 @@ void PMDWIN::ppz8main(QQ *qq)
+ 				}
+ 				// "L"があった時
+ 				si = qq->partloop;
+-				qq->loopcheck = 1;
++				qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 			} else {
+ 				if(*si == 0xda) {				// ポルタメント
+ 					si = portaz(qq, ++si);
+@@ -4944,7 +4948,7 @@ uchar * PMDWIN::comedloop(QQ *qq, uchar *si)
+ 		}
+ 	} else {			// 0 ナラ ムジョウケン ループ
+ 		si++;
+-		qq->loopcheck = 1;
++		qq->loopcheck = 1; pmd2wav_part_looped(qq);
+ 	}
+ 	
+ 	ax = read_word(si) + 2;

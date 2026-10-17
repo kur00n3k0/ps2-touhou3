@@ -9,3 +9,5 @@ tup-generate.vardict
 # Converted sprites
 *.[ac]sp
 *.[AC]SP
+# PS2 port build output
+/obj-ps2/
