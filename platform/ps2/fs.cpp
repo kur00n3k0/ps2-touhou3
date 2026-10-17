@@ -6,13 +6,50 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <kernel.h>
 
 namespace fs {
 
 static char base[256] = "host:";
 
+static int io_sema = -1;
+static volatile int io_owner = -1;
+static int io_depth = 0;
+
+void io_lock()
+{
+	if(io_sema < 0) {
+		return; // before init(): single-threaded
+	}
+	const int me = GetThreadId();
+	if(io_owner == me) {
+		io_depth++;
+		return;
+	}
+	WaitSema(io_sema);
+	io_owner = me;
+	io_depth = 1;
+}
+
+void io_unlock()
+{
+	if((io_sema < 0) || (io_owner != GetThreadId())) {
+		return;
+	}
+	if(--io_depth == 0) {
+		io_owner = -1;
+		SignalSema(io_sema);
+	}
+}
+
 void init(const char *argv0)
 {
+	if(io_sema < 0) {
+		ee_sema_t sema = {};
+		sema.init_count = 1;
+		sema.max_count = 1;
+		io_sema = CreateSema(&sema);
+	}
 	if(!argv0 || !argv0[0]) {
 		return;
 	}
@@ -32,6 +69,11 @@ void init(const char *argv0)
 	printf("fs: game folder is %s\n", base);
 }
 
+bool read_only()
+{
+	return (strncmp(base, "cdrom", 5) == 0);
+}
+
 void path(char *buf, size_t size, const char *fmt, ...)
 {
 	const size_t n = snprintf(buf, size, "%s", base);
@@ -41,6 +83,26 @@ void path(char *buf, size_t size, const char *fmt, ...)
 		vsnprintf((buf + n), (size - n), fmt, ap);
 	}
 	va_end(ap);
+
+	if(n >= size) {
+		return;
+	}
+	// Game folder contents are all upper case (deploy.sh), matching ISO9660.
+	for(char *p = (buf + n); *p; p++) {
+		*p = toupper(uint8_t(*p));
+	}
+	// On cdrom0: also backslashes and a ";1" version suffix.
+	if(read_only()) {
+		for(char *p = (buf + n); *p; p++) {
+			if(*p == '/') {
+				*p = '\\';
+			}
+		}
+		const size_t len = strlen(buf);
+		if((len + 3) <= size) {
+			strcpy((buf + len), ";1");
+		}
+	}
 }
 
 // The data archives are named in Shift-JIS on the original disk. PS2 file

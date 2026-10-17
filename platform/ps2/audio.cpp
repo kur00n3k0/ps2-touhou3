@@ -1,4 +1,12 @@
 // PS2 port: music and sound effect playback. See audio.hpp.
+//
+// Threads:
+// • The reader thread streams the current song from disk into a ring buffer
+//   (about 2 seconds), in large reads, handling the loop point. Slow media
+//   (a disc, or OPL's USB emulation) only ever block this thread.
+// • The mixer thread takes song frames from the ring, applies PMD's fade,
+//   mixes in the current sound effect, and feeds audsrv.
+// The game thread only posts commands.
 
 #include "platform/ps2/audio.hpp"
 #include "platform/ps2/fs.hpp"
@@ -15,50 +23,46 @@ enum {
 	RATE = 44100,
 	CHUNK_FRAMES = 512,           // ~11.6 ms per mixer pass
 	FADE_STEP_US = (9216 * 8),    // PMD: fout() every 8 timer A ticks
+	RING_FRAMES = (RATE * 2),     // 2 seconds of read-ahead
+	READ_FRAMES = 8192,           // 32 KiB per disk read
+	SE_SLOTS = 64,
 };
 
-// Mixer state. Commands from the game thread are posted under [lock] and
-// picked up by the mixer thread on its next pass.
 namespace {
 
-struct Song {
-	FILE *fp = nullptr;
-	long data_offset = 0;   // byte offset of PCM data in the file
-	long total = 0;         // frames
-	long loop_start = -1;   // frame, -1 = no loop
-	long pos = 0;           // frame
-	bool playing = false;
-	int fade_speed = 0;
-	int fade_value = 0;
-	long fade_us = 0;       // time accumulated towards the next fade step
-	long frames_played = 0;
-};
-
-Song song;
-char song_name[32] = "";
-bool song_name_changed = false;
-
-enum cmd_t { CMD_NONE, CMD_PLAY, CMD_STOP, CMD_FADE };
-volatile cmd_t pending = CMD_NONE;
-volatile int pending_fade = 0;
-volatile uint8_t fade_value_shared = 0;
-
+/// Shared state, guarded by [lock]
+/// --------------------------------
 int lock = -1;
 bool ready = false;
-int16_t mixbuf[CHUNK_FRAMES * 2];
 
-// Sound effects: pre-rendered from YUME.EFC (ps2port/tools/efc2m.py +
-// pmd2wav) and kept in memory. Like PMD's single FM effect channel, a new
-// effect replaces the one that is playing.
-enum { SE_SLOTS = 64 };
-struct Effect {
-	int16_t *pcm = nullptr; // stereo frames
-	long frames = 0;
-};
-Effect effects[SE_SLOTS];
-volatile int se_request = -1;
-int se_cur = -1;
-long se_pos = 0;
+// Requests from the game thread.
+char req_name[32] = "";
+bool req_load = false;     // reader: open [req_name]
+bool req_restart = false;  // reader: flush the ring, start at frame 0
+bool req_stop = false;     // mixer: stop playback
+int req_fade = -1;         // mixer: new fade speed
+bool req_fade_reset = false; // mixer: reset the fade (on play)
+
+// Ring buffer between reader (producer) and mixer (consumer).
+int16_t ring[RING_FRAMES * 2];
+volatile long ring_write = 0;   // frames written in total
+volatile long ring_read = 0;    // frames consumed in total
+volatile bool ring_eof = false; // a non-looping song has been fully read
+volatile bool playing = false;
+/// --------------------------------
+
+volatile uint8_t fade_value_shared = 0;
+
+int reader_wake = -1; // semaphore: something for the reader to do
+
+/// Reader thread state (only touched by the reader)
+/// ------------------------------------------------
+FILE *song_fp = nullptr;
+long song_data_offset = 0;
+long song_total = 0;       // frames
+long song_loop_start = -1; // frame, -1 = no loop
+long song_pos = 0;         // frame to read next
+/// ------------------------------------------------
 
 // Seeks [fp] to the PCM data of a RIFF WAV file and returns its size in
 // frames (16-bit stereo), or 0 if there is no data chunk.
@@ -81,12 +85,134 @@ long wav_find_data(FILE *fp)
 	}
 }
 
+// Opens audio/<NAME>.WAV and its loop point file loop/<NAME>.LOP
+// ("<loop start frame> <total frames>") for [name] ("op.m" → "OP").
+bool song_open(const char *name)
+{
+	fs::IoLock io;
+	if(song_fp) {
+		fclose(song_fp);
+		song_fp = nullptr;
+	}
+	song_total = 0;
+	char base[16];
+	int i = 0;
+	for(; name[i] && (name[i] != '.') && (i < 15); i++) {
+		base[i] = toupper(uint8_t(name[i]));
+	}
+	base[i] = '\0';
+
+	char path[256];
+	fs::path(path, sizeof(path), "audio/%s.WAV", base);
+	song_fp = fopen(path, "rb");
+	if(!song_fp) {
+		printf("audio: missing %s\n", path);
+		return false;
+	}
+	song_total = wav_find_data(song_fp);
+	song_data_offset = ftell(song_fp);
+	song_loop_start = -1;
+	fs::path(path, sizeof(path), "loop/%s.LOP", base);
+	if(FILE *lp = fopen(path, "r")) {
+		long ls = -1, tot = 0;
+		if(fscanf(lp, "%ld %ld", &ls, &tot) >= 1) {
+			song_loop_start = ls;
+		}
+		fclose(lp);
+	}
+	song_pos = 0;
+	return (song_total > 0);
+}
+
+// Fills the ring as far as possible.
+void reader_fill()
+{
+	while(song_fp && !ring_eof) {
+		const long space = (RING_FRAMES - (ring_write - ring_read));
+		if(space < READ_FRAMES) {
+			return;
+		}
+		if(song_pos >= song_total) {
+			if(song_loop_start < 0) {
+				ring_eof = true;
+				return;
+			}
+			song_pos = song_loop_start;
+		}
+		long n = READ_FRAMES;
+		if(n > (song_total - song_pos)) {
+			n = (song_total - song_pos);
+		}
+		// Don't cross the end of the ring in one read.
+		const long at = (ring_write % RING_FRAMES);
+		if(n > (RING_FRAMES - at)) {
+			n = (RING_FRAMES - at);
+		}
+		size_t got;
+		{
+			fs::IoLock io;
+			fseek(song_fp, (song_data_offset + (song_pos * 4)), SEEK_SET);
+			got = fread(&ring[at * 2], 4, n, song_fp);
+		}
+		if(got == 0) {
+			ring_eof = true;
+			return;
+		}
+		song_pos += got;
+		ring_write += got;
+	}
+}
+
+uint8_t reader_stack[0x4000] __attribute__((aligned(16)));
+
+void reader_thread(void *)
+{
+	for(;;) {
+		WaitSema(reader_wake);
+
+		WaitSema(lock);
+		const bool load = req_load;
+		const bool restart = req_restart;
+		char name[32];
+		strcpy(name, req_name);
+		req_load = false;
+		req_restart = false;
+		SignalSema(lock);
+
+		if(load) {
+			song_open(name);
+		}
+		if(load || restart) {
+			// Flush: the mixer sees an empty ring until new data arrives.
+			ring_eof = false;
+			ring_read = ring_write;
+			song_pos = 0;
+		}
+		reader_fill();
+	}
+}
+
+/// Sound effects
+/// -------------
+// Pre-rendered from YUME.EFC (ps2port/tools/efc2m.py + pmd2wav) and kept in
+// memory. Like PMD's single FM effect channel, a new effect replaces the one
+// that is playing.
+struct Effect {
+	int16_t *pcm = nullptr; // stereo frames
+	long frames = 0;
+};
+Effect effects[SE_SLOTS];
+volatile int se_request = -1;
+int se_cur = -1;
+long se_pos = 0;
+
 void effects_load()
 {
+	fs::IoLock io;
 	int loaded = 0;
 	for(int n = 0; n < SE_SLOTS; n++) {
 		char path[256];
-		fs::path(path, sizeof(path), "audio/se/SE%02d.wav", n);
+		fs::path(path, sizeof(path), "audio/se/SE%02d.WAV", n);
 		FILE *fp = fopen(path, "rb");
 		if(!fp) {
 			continue;
@@ -103,132 +229,75 @@ void effects_load()
 	}
 	printf("audio: %d sound effects loaded\n", loaded);
 }
+/// -------------
 
-// Opens audio/<NAME>.wav and its .loop sidecar for [name] ("OP.M" → "OP").
-bool song_open(Song& s, const char *name)
-{
-	if(s.fp) {
-		fclose(s.fp);
-		s.fp = nullptr;
-	}
-	char base[16];
-	int i = 0;
-	for(; name[i] && (name[i] != '.') && (i < 15); i++) {
-		base[i] = toupper(uint8_t(name[i]));
-	}
-	base[i] = '\0';
-
-	char path[256];
-	fs::path(path, sizeof(path), "audio/%s.wav", base);
-	s.fp = fopen(path, "rb");
-	if(!s.fp) {
-		printf("audio: missing %s\n", path);
-		return false;
-	}
-	s.total = wav_find_data(s.fp);
-	s.data_offset = ftell(s.fp);
-	s.loop_start = -1;
-	fs::path(path, sizeof(path), "audio/%s.wav.loop", base);
-	if(FILE *lp = fopen(path, "r")) {
-		long ls = -1, tot = 0;
-		if(fscanf(lp, "%ld %ld", &ls, &tot) >= 1) {
-			s.loop_start = ls;
-		}
-		fclose(lp);
-	}
-	s.pos = 0;
-	return (s.total > 0);
-}
-
-// Reads up to [frames] frames of the song into [dst], handling the loop.
-// Returns the number of frames written; fewer means the song ended.
-int song_read(Song& s, int16_t *dst, int frames)
-{
-	int done = 0;
-	while(done < frames) {
-		if(s.pos >= s.total) {
-			if(s.loop_start < 0) {
-				break;
-			}
-			s.pos = s.loop_start;
-		}
-		long n = (frames - done);
-		if(n > (s.total - s.pos)) {
-			n = (s.total - s.pos);
-		}
-		fseek(s.fp, (s.data_offset + (s.pos * 4)), SEEK_SET);
-		const size_t got = fread(dst + (done * 2), 4, n, s.fp);
-		if(got == 0) {
-			break;
-		}
-		s.pos += got;
-		done += got;
-	}
-	return done;
-}
+/// Mixer thread
+/// ------------
+int16_t mixbuf[CHUNK_FRAMES * 2];
+int fade_speed = 0;
+int fade_value = 0;
+long fade_us = 0;
 
 void mixer_pass()
 {
 	memset(mixbuf, 0, sizeof(mixbuf));
 
 	WaitSema(lock);
-	if(song_name_changed) {
-		song_name_changed = false;
-		song.playing = false;
-		song_open(song, song_name);
+	if(req_stop) {
+		req_stop = false;
+		playing = false;
 	}
-	switch(pending) {
-	case CMD_PLAY:
-		if(song.fp) {
-			song.pos = 0;
-			song.playing = true;
-			song.fade_speed = 0;
-			song.fade_value = 0;
-			song.fade_us = 0;
-			song.frames_played = 0;
-		}
-		break;
-	case CMD_STOP:
-		song.playing = false;
-		break;
-	case CMD_FADE:
-		song.fade_speed = pending_fade;
-		break;
-	default:
-		break;
+	if(req_fade_reset) {
+		req_fade_reset = false;
+		fade_speed = 0;
+		fade_value = 0;
+		fade_us = 0;
 	}
-	pending = CMD_NONE;
+	if(req_fade >= 0) {
+		fade_speed = req_fade;
+		req_fade = -1;
+	}
 	SignalSema(lock);
 
-	if(song.playing) {
-		const int got = song_read(song, mixbuf, CHUNK_FRAMES);
-		if(got < CHUNK_FRAMES) {
-			song.playing = false;
+	if(playing) {
+		const long avail = (ring_write - ring_read);
+		const long n = ((avail < CHUNK_FRAMES) ? avail : CHUNK_FRAMES);
+		for(long i = 0; i < n; i++) {
+			const long at = ((ring_read + i) % RING_FRAMES);
+			mixbuf[(i * 2) + 0] = ring[(at * 2) + 0];
+			mixbuf[(i * 2) + 1] = ring[(at * 2) + 1];
 		}
-		song.frames_played += got;
+		ring_read += n;
+		if((n < CHUNK_FRAMES) && ring_eof && (ring_read == ring_write)) {
+			playing = false; // non-looping song finished
+		}
 
-		// PMD fade, applied as a linear gain on the mix.
-		if(song.fade_speed) {
-			song.fade_us += ((CHUNK_FRAMES * 1000000LL) / RATE);
-			while(song.fade_us >= FADE_STEP_US) {
-				song.fade_us -= FADE_STEP_US;
-				if((song.fade_value + song.fade_speed) < 256) {
-					song.fade_value += song.fade_speed;
+		// PMD fade, applied as a linear gain on the music.
+		if(fade_speed) {
+			fade_us += ((CHUNK_FRAMES * 1000000LL) / RATE);
+			while(fade_us >= FADE_STEP_US) {
+				fade_us -= FADE_STEP_US;
+				if((fade_value + fade_speed) < 256) {
+					fade_value += fade_speed;
 				} else {
-					song.fade_value = 255;
-					song.fade_speed = 0;
-					song.playing = false;
+					fade_value = 255;
+					fade_speed = 0;
+					playing = false;
 				}
 			}
 		}
-		if(song.fade_value) {
-			const int gain = (256 - song.fade_value);
+		if(fade_value) {
+			const int gain = (256 - fade_value);
 			for(int i = 0; i < (CHUNK_FRAMES * 2); i++) {
 				mixbuf[i] = int16_t((mixbuf[i] * gain) >> 8);
 			}
 		}
 	}
-	fade_value_shared = uint8_t(song.fade_value);
+	// Wake the reader whenever there's room for another read.
+	if((RING_FRAMES - (ring_write - ring_read)) >= READ_FRAMES) {
+		SignalSema(reader_wake);
+	}
+	fade_value_shared = uint8_t(fade_value);
 
 	if(se_request >= 0) {
 		se_cur = se_request;
@@ -243,7 +312,7 @@ void mixer_pass()
 		}
 		const int16_t *src = (e.pcm + (se_pos * 2));
 		for(long i = 0; i < (n * 2); i++) {
-			int v = (mixbuf[i] + src[i]);
+			const int v = (mixbuf[i] + src[i]);
 			mixbuf[i] = int16_t((v > 32767) ? 32767 : ((v < -32768) ? -32768 : v));
 		}
 		se_pos += n;
@@ -256,13 +325,30 @@ void mixer_pass()
 	audsrv_play_audio(reinterpret_cast<const char *>(mixbuf), sizeof(mixbuf));
 }
 
-uint8_t thread_stack[0x4000] __attribute__((aligned(16)));
+uint8_t mixer_stack[0x4000] __attribute__((aligned(16)));
 
 void mixer_thread(void *)
 {
 	for(;;) {
 		mixer_pass();
 	}
+}
+/// ------------
+
+bool start_thread(void (*func)(void *), uint8_t *stack, int stack_size, int prio)
+{
+	ee_thread_t th = {};
+	th.func = reinterpret_cast<void *>(func);
+	th.stack = stack;
+	th.stack_size = stack_size;
+	th.gp_reg = &_gp;
+	th.initial_priority = prio;
+	const int id = CreateThread(&th);
+	if(id < 0) {
+		return false;
+	}
+	StartThread(id, nullptr);
+	return true;
 }
 
 } // namespace
@@ -288,19 +374,17 @@ bool init()
 	sema.init_count = 1;
 	sema.max_count = 1;
 	lock = CreateSema(&sema);
+	sema.init_count = 0;
+	sema.max_count = 1;
+	reader_wake = CreateSema(&sema);
 
-	ee_thread_t th = {};
-	th.func = reinterpret_cast<void *>(mixer_thread);
-	th.stack = thread_stack;
-	th.stack_size = sizeof(thread_stack);
-	th.gp_reg = &_gp;
-	th.initial_priority = 16; // above the game's main thread
-	const int id = CreateThread(&th);
-	if(id < 0) {
+	// Mixer above video (20) and the game (64); the reader below video, since
+	// it mostly waits for the disk.
+	if(!start_thread(mixer_thread, mixer_stack, sizeof(mixer_stack), 16) ||
+	   !start_thread(reader_thread, reader_stack, sizeof(reader_stack), 24)) {
 		printf("audio: CreateThread failed\n");
 		return false;
 	}
-	StartThread(id, nullptr);
 	ready = true;
 	return true;
 }
@@ -311,25 +395,46 @@ void song_load(const char *pmd_fn)
 		return;
 	}
 	WaitSema(lock);
-	strncpy(song_name, pmd_fn, (sizeof(song_name) - 1));
-	song_name_changed = true;
+	strncpy(req_name, pmd_fn, (sizeof(req_name) - 1));
+	req_load = true;
+	playing = false;
 	SignalSema(lock);
+	SignalSema(reader_wake);
 }
 
-static void post(cmd_t cmd, int fade = 0)
+void song_play()
 {
 	if(!ready) {
 		return;
 	}
 	WaitSema(lock);
-	pending = cmd;
-	pending_fade = fade;
+	req_restart = true;
+	req_fade_reset = true;
+	playing = true;
+	SignalSema(lock);
+	SignalSema(reader_wake);
+}
+
+void song_stop()
+{
+	if(!ready) {
+		return;
+	}
+	WaitSema(lock);
+	req_stop = true;
 	SignalSema(lock);
 }
 
-void song_play() { post(CMD_PLAY); }
-void song_stop() { post(CMD_STOP); }
-void song_fade(uint8_t speed) { post(CMD_FADE, speed); }
+void song_fade(uint8_t speed)
+{
+	if(!ready) {
+		return;
+	}
+	WaitSema(lock);
+	req_fade = speed;
+	SignalSema(lock);
+}
+
 uint8_t song_fade_value() { return fade_value_shared; }
 
 int song_measure()

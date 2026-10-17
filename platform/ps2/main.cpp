@@ -31,6 +31,7 @@
 #include <string.h>
 
 FILE* ps2_game_fopen(const char *fn, const char *mode);
+void font_preload(void);
 
 extern "C" {
 // Embedded IOP modules (see Makefile.ps2).
@@ -84,6 +85,7 @@ void load_iop_modules()
 // to YUME.CFG, like th02/formats/cfg_init.c.
 void resident_create()
 {
+	fs::IoLock io;
 	resident = static_cast<resident_t *>(calloc(1, sizeof(resident_t)));
 	strcpy(resident->id, RES_ID);
 
@@ -162,6 +164,7 @@ int main(int argc, char *argv[])
 
 	load_iop_modules();
 	fs::init((argc > 0) ? argv[0] : nullptr);
+	font_preload();
 	if(!video::init()) {
 		printf("main: no video\n");
 		SleepThread();

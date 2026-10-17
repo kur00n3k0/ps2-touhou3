@@ -8,6 +8,7 @@
 #include "platform/x86real/pc98/grp_surf.hpp"
 #include "platform/ps2/pc98hw.hpp"
 #include "platform/ps2/pi_decode.hpp"
+#include "platform/ps2/fs.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,6 +220,7 @@ namespace {
 // Reads a whole game file (from the pack archive or the game folder).
 uint8_t* read_whole_file(const char *fn, size_t &size)
 {
+	fs::IoLock io;
 	FILE *fp = ps2_game_fopen(fn, "rb");
 	if(!fp) {
 		return nullptr;

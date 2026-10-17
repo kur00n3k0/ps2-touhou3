@@ -198,6 +198,7 @@ static FILE* game_fopen(const char *fn, const char *mode);
 // .RGB files: 16 × (r, g, b), 4 bits each; expanded to 8 bits like the asm.
 int palette_entry_rgb(const char *fn)
 {
+	fs::IoLock io;
 	FILE *fp = game_fopen(fn, "rb");
 	if(!fp) {
 		return -2;
@@ -462,6 +463,7 @@ static bool bfnt_open(const char *fn, FILE *&fp, bfnt_header_t& h)
 // row, written to all 256 gaiji slots.
 int gaiji_entry_bfnt(const char *fn)
 {
+	fs::IoLock io;
 	FILE *fp;
 	bfnt_header_t h;
 	if(!bfnt_open(fn, fp, h)) {
@@ -531,6 +533,7 @@ static int super_count = 0;
 // Palettes with each entry's bytes rotated as in bfnt_palette_set.asm.
 int super_entry_bfnt(const char *fn)
 {
+	fs::IoLock io;
 	FILE *fp;
 	bfnt_header_t h;
 	if(!bfnt_open(fn, fp, h)) {
@@ -719,6 +722,7 @@ uint8_t* pf_load(const char *fn, uint32_t& size)
 
 void pfstart(const unsigned char *parfile)
 {
+	fs::IoLock io;
 	pfend();
 	char path[256];
 	fs::path(path, sizeof(path), "%s", fs::map_name(reinterpret_cast<const char *>(parfile)));
@@ -760,6 +764,7 @@ void pfstart(const unsigned char *parfile)
 
 void pfend(void)
 {
+	fs::IoLock io;
 	if(pf_fp) {
 		fclose(pf_fp);
 		pf_fp = nullptr;
@@ -771,8 +776,123 @@ void pfend(void)
 
 // Opens a game file: from the started archive if it's in there (served from
 // memory), otherwise from the game folder.
+// Files written while running from a read-only disc (YUME.CFG, the high
+// score file) live in memory for the rest of the session.
+namespace {
+struct RamFile {
+	char name[32];
+	uint8_t *data;
+	size_t size;
+	size_t cap;
+};
+enum { RAMFILES_MAX = 16 };
+RamFile ramfiles[RAMFILES_MAX];
+
+struct RamCursor {
+	RamFile *f;
+	size_t pos;
+};
+
+RamFile* ramfile_find(const char *fn, bool create)
+{
+	for(RamFile &f : ramfiles) {
+		if(f.name[0] && name_ieq(f.name, fn)) {
+			return &f;
+		}
+	}
+	if(!create) {
+		return nullptr;
+	}
+	for(RamFile &f : ramfiles) {
+		if(!f.name[0]) {
+			strncpy(f.name, fn, (sizeof(f.name) - 1));
+			f.data = nullptr;
+			f.size = f.cap = 0;
+			return &f;
+		}
+	}
+	return nullptr;
+}
+
+int ram_read(void *c, char *buf, _READ_WRITE_BUFSIZE_TYPE n)
+{
+	RamCursor *rc = static_cast<RamCursor *>(c);
+	size_t avail = ((rc->pos < rc->f->size) ? (rc->f->size - rc->pos) : 0);
+	size_t len = ((size_t(n) < avail) ? size_t(n) : avail);
+	memcpy(buf, (rc->f->data + rc->pos), len);
+	rc->pos += len;
+	return int(len);
+}
+
+int ram_write(void *c, const char *buf, _READ_WRITE_BUFSIZE_TYPE n)
+{
+	RamCursor *rc = static_cast<RamCursor *>(c);
+	RamFile *f = rc->f;
+	const size_t end = (rc->pos + n);
+	if(end > f->cap) {
+		size_t cap = ((f->cap ? f->cap : 256));
+		while(cap < end) {
+			cap *= 2;
+		}
+		uint8_t *d = static_cast<uint8_t *>(realloc(f->data, cap));
+		if(!d) {
+			return -1;
+		}
+		memset((d + f->cap), 0, (cap - f->cap));
+		f->data = d;
+		f->cap = cap;
+	}
+	memcpy((f->data + rc->pos), buf, n);
+	rc->pos = end;
+	if(end > f->size) {
+		f->size = end;
+	}
+	return int(n);
+}
+
+fpos_t ram_seek(void *c, fpos_t off, int whence)
+{
+	RamCursor *rc = static_cast<RamCursor *>(c);
+	long base = ((whence == SEEK_SET) ? 0 : ((whence == SEEK_CUR) ? long(rc->pos) : long(rc->f->size)));
+	long pos = (base + long(off));
+	if(pos < 0) {
+		return -1;
+	}
+	rc->pos = size_t(pos);
+	return pos;
+}
+
+int ram_close(void *c)
+{
+	delete static_cast<RamCursor *>(c);
+	return 0;
+}
+
+FILE* ramfile_open(RamFile *f, const char *mode)
+{
+	if((mode[0] == 'w')) {
+		f->size = 0;
+	}
+	RamCursor *rc = new RamCursor{ f, ((mode[0] == 'a') ? f->size : 0) };
+	return funopen(rc, ram_read, ram_write, ram_seek, ram_close);
+}
+}
+
+// Opens a game file: files written earlier in a read-only session, then the
+// started archive (served from memory), then the game folder.
 static FILE* game_fopen(const char *fn, const char *mode)
 {
+	fs::IoLock io;
+	if(fs::read_only()) {
+		const bool writing = ((mode[0] != 'r') || strchr(mode, '+'));
+		if(RamFile *f = ramfile_find(fn, false)) {
+			return ramfile_open(f, mode);
+		}
+		if(writing) {
+			RamFile *f = ramfile_find(fn, true);
+			return (f ? ramfile_open(f, mode) : nullptr);
+		}
+	}
 	if(mode[0] == 'r') {
 		uint32_t size;
 		if(uint8_t *data = pf_load(fn, size)) {
@@ -797,6 +917,7 @@ static FILE *file_fp = nullptr;
 
 int file_ropen(const char *filename)
 {
+	fs::IoLock io;
 	file_close();
 	file_fp = game_fopen(filename, "rb");
 	return (file_fp != nullptr);
@@ -804,6 +925,7 @@ int file_ropen(const char *filename)
 
 int file_create(const char *filename)
 {
+	fs::IoLock io;
 	file_close();
 	file_fp = game_fopen(filename, "wb");
 	return (file_fp != nullptr);
@@ -812,6 +934,7 @@ int file_create(const char *filename)
 // Opens for writing without truncating, creating the file if needed.
 int file_append(const char *filename)
 {
+	fs::IoLock io;
 	file_close();
 	file_fp = game_fopen(filename, "r+b");
 	if(!file_fp) {
@@ -825,16 +948,19 @@ int file_append(const char *filename)
 
 int file_read(void far *buf, unsigned wsize)
 {
+	fs::IoLock io;
 	return (file_fp ? int(fread(buf, 1, wsize, file_fp)) : 0);
 }
 
 int file_write(const void far *buf, unsigned wsize)
 {
+	fs::IoLock io;
 	return (file_fp ? (fwrite(buf, 1, wsize, file_fp) == wsize) : 0);
 }
 
 void file_seek(long pos, int dir)
 {
+	fs::IoLock io;
 	if(file_fp) {
 		fseek(file_fp, pos, dir);
 	}
@@ -842,6 +968,7 @@ void file_seek(long pos, int dir)
 
 void file_close(void)
 {
+	fs::IoLock io;
 	if(file_fp) {
 		fclose(file_fp);
 		file_fp = nullptr;
@@ -850,6 +977,7 @@ void file_close(void)
 
 int file_exist(const char *filename)
 {
+	fs::IoLock io;
 	FILE *fp = game_fopen(filename, "rb");
 	if(fp) {
 		fclose(fp);
@@ -860,6 +988,7 @@ int file_exist(const char *filename)
 
 long file_size(void)
 {
+	fs::IoLock io;
 	if(!file_fp) {
 		return 0;
 	}

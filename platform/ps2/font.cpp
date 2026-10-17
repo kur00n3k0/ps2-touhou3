@@ -25,6 +25,7 @@ uint8_t *font = nullptr;
 const uint8_t* font_data()
 {
 	if(!font) {
+		fs::IoLock io;
 		font = static_cast<uint8_t *>(calloc(1, FONT_SIZE));
 		char path[256];
 		fs::path(path, sizeof(path), "PC98FONT.BIN");
@@ -49,6 +50,12 @@ bool jis_to_gaiji(jis_t jis, uint8_t& id)
 	id = ((jis & 0x7F) | ((hi == 0x77) ? 0x80 : 0x00));
 	return true;
 }
+}
+
+// Called at startup, so the video thread never has to touch the disk.
+void font_preload(void)
+{
+	font_data();
 }
 
 void font_read(font_glyph_t& glyph, jis_t jis)
